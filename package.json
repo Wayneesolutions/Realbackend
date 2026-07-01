@@ -1,0 +1,37 @@
+{
+  "name": "property-visual-explorer-api",
+  "version": "1.0.0",
+  "description": "Property Visual Explorer - WhatsApp Lead Engine for Punjab Real Estate",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "migrate": "knex migrate:latest",
+    "migrate:rollback": "knex migrate:rollback",
+    "seed": "knex seed:run",
+    "setup": "npm run migrate && npm run seed",
+    "worker:geo": "node src/workers/geoEnrichmentWorker.js",
+    "worker:landmark": "node src/workers/landmarkWorker.js",
+    "worker:vocallm": "node src/workers/vocallmWorker.js",
+    "worker:whatsapp": "node src/workers/whatsappOutboundWorker.js",
+    "workers": "concurrently \"npm:worker:geo\" \"npm:worker:landmark\" \"npm:worker:vocallm\" \"npm:worker:whatsapp\""
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "bcryptjs": "^2.4.3",
+    "bullmq": "^5.7.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.2",
+    "knex": "^3.1.0",
+    "mapbox-gl": "^3.4.0",
+    "@mapbox/mapbox-gl-draw": "^1.4.3",
+    "pg": "^8.11.5"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.1.0"
+  }
+}

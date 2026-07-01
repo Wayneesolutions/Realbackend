@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.log
+npm-debug.log*
+
+# Frontend build output
+client/dist/
+client/node_modules/
+
+# OS/editor cruft
+.DS_Store
+.vscode/

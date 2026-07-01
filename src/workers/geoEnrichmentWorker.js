@@ -1,0 +1,105 @@
+// src/workers/geoEnrichmentWorker.js
+const { Worker, Queue } = require('bullmq');
+const axios = require('axios');
+const IORedis = require('ioredis');
+const knexConfig = require('../../knexfile');
+const knex = require('knex')(knexConfig[process.env.NODE_ENV || 'development']);
+
+const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
+const REDIS_PORT = process.env.REDIS_PORT || 6379;
+
+// Connect to dedicated background Redis event broker
+const redisConnection = new IORedis({ host: REDIS_HOST, port: REDIS_PORT, maxRetriesPerRequest: null }); // required by BullMQ Worker (blocking commands) — omitting this throws on boot
+
+// Queue used to hand off to landmarkWorker.js once coordinates are known
+const landmarkQueue = new Queue('landmark-extraction', { connection: redisConnection });
+
+console.log(`[Worker Engine] Initializing Geo-Enrichment Task Consumer...`);
+
+const geoWorker = new Worker('geo-enrichment', async (job) => {
+  const { listingId, rawAddress } = job.data;
+
+  console.log(`[Job ${job.id}] Processing Geocoding Blueprint optimization for Listing Ref: ${listingId}`);
+
+  // Fetch the configuration key matching this listing context block to see if an API key override exists
+  const listingData = await knex('listings').where({ id: listingId }).first();
+  if (!listingData) {
+    throw new Error(`Listing ID ${listingId} not found. Terminating job.`);
+  }
+
+  const config = await knex('tenant_configs').where({ tenant_id: listingData.tenant_id }).first();
+  const targetApiKey = config?.google_maps_api_key_override || process.env.GOOGLE_MAPS_API_KEY;
+
+  if (!targetApiKey) {
+    throw new Error('Missing available Google Maps API Access Token.');
+  }
+
+  try {
+    // 1. Dispatch lookup request directly to Google Geocoding engine
+    // Adding local market region indicators to target Ludhiana/Punjab boundaries securely
+    const geoUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(rawAddress)}&components=country:IN&key=${targetApiKey}`;
+    const response = await axios.get(geoUrl);
+
+    if (response.data.status !== 'OK') {
+      throw new Error(`Google Maps Platform rejected lookup parameter with status code: ${response.data.status}`);
+    }
+
+    const result = response.data.results[0];
+    const formattedAddress = result.formatted_address;
+    const { lat, lng } = result.geometry.location;
+
+    // 2. Persist calculations back to listings inside a safe database transaction block
+    await knex.transaction(async (trx) => {
+      await trx('listings')
+        .where({ id: listingId })
+        .update({
+          formatted_address: formattedAddress,
+          lat: lat,
+          lng: lng,
+          status: 'active', // Safely move status from pending to active to automatically open public links
+          updated_at: knex.fn.now()
+        });
+
+      // 3. Initialize default structural records inside the listing_media table to avoid null errors on the UI
+      // Pre-configures maps snapshots for immediate rendering
+      const staticSatelliteUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=18&size=800x450&maptype=satellite&key=${targetApiKey}`;
+      const staticStreetViewUrl = `https://maps.googleapis.com/maps/api/streetview?size=800x450&location=${lat},${lng}&key=${targetApiKey}`;
+
+      await trx('listing_media')
+        .insert({
+          id: knex.raw('uuid_generate_v4()'),
+          listing_id: listingId,
+          satellite_image_url: staticSatelliteUrl,
+          streetview_image_url: staticStreetViewUrl,
+          fetched_at: knex.fn.now()
+        })
+        .onConflict('listing_id')
+        .merge();
+    });
+
+    // 4. Now that coordinates exist, hand off to the landmark worker (Phase 2 enrichment)
+    await landmarkQueue.add('extract-infra-landmarks', {
+      listingId: listingId,
+      lat: lat,
+      lng: lng
+    }, {
+      attempts: 2,
+      backoff: 1000
+    });
+
+    console.log(`[Geo Worker Pipeline] Appended Landmark task chain for Listing Ref: ${listingId}`);
+    console.log(`[Job ${job.id}] Successfully completed Geocoding & media initialization mapping for ${listingId}.`);
+    return { success: true, coordinates: { lat, lng } };
+
+  } catch (error) {
+    console.error(`[Job ${job.id}] Geo-Enrichment Core Handler Failed:`, error.message);
+    throw error; // Retained for automatic BullMQ incremental backoff retry scheduling
+  }
+}, { connection: redisConnection });
+
+// Event monitoring listeners
+geoWorker.on('failed', (job, err) => {
+  console.error(`❌ [Job ${job?.id}] Geo-enrichment task failed permanently:`, err.message);
+});
+
+module.exports = geoWorker;
