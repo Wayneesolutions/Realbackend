@@ -11,8 +11,8 @@ const geoEnrichmentQueue = new Queue('geo-enrichment', {
  * Dispatches an asynchronous geocoding and visual aggregation job via BullMQ.
  */
 async function createListing(req, res) {
-  const knex = req.app.get('db');
-  
+  const knex = req.dbTrx || req.app.get('db');
+
   // Extract contextual identity injected previously by our authGuard middleware
   const { tenant_id, id: userId } = req.user;
   

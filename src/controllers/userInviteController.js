@@ -7,7 +7,7 @@ const crypto = require('crypto');
  * so you'll copy-paste it to them over WhatsApp for the first few users.
  */
 async function inviteTenantUser(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
   const { tenant_id, role } = req.user;
   const { email, name } = req.body;
 

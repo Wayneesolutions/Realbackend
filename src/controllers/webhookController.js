@@ -15,7 +15,12 @@ function parseInboundPayload(body) {
     leadName: body.contacts?.[0]?.profile?.name || body.from_name || body.sender?.name || 'Visitor',
     incomingText: body.messages?.[0]?.text?.body || body.message_text || body.text,
     bspThreadRef: body.messages?.[0]?.id || body.conversation_id || body.msg_id,
-    inferredSlug: body.messages?.[0]?.context?.referred_slug || body.metadata?.slug || null
+    inferredSlug: body.messages?.[0]?.context?.referred_slug || body.metadata?.slug || null,
+    // The receiving WhatsApp business number — most BSPs include this so we
+    // can route messages to the correct tenant without relying on "oldest active".
+    receivingNumber: body.metadata?.phone_number_id
+      ? null // Meta Cloud API uses phone_number_id, not a raw number — resolve below if needed
+      : body.to || body.to_phone || body.receiver?.phone || null,
   };
 }
 
@@ -54,7 +59,7 @@ async function handleInboundWhatsApp(req, res) {
     return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid webhook signature.' } });
   }
 
-  const { phone, leadName, incomingText, bspThreadRef, inferredSlug } = parseInboundPayload(req.body);
+  const { phone, leadName, incomingText, bspThreadRef, inferredSlug, receivingNumber } = parseInboundPayload(req.body);
 
   if (!phone || !incomingText) {
     // Non-message events (delivery receipts, status updates) — ack and move on
@@ -79,17 +84,29 @@ async function handleInboundWhatsApp(req, res) {
         lead = await trx('leads').where({ phone }).first();
 
         if (!lead) {
-          // KNOWN LIMITATION: with only one tenant (you) today, defaulting to
-          // "the active tenant" is safe. The moment a second paying tenant
-          // exists, this becomes ambiguous — there's no way to know which
-          // tenant's WhatsApp number this message arrived on without the BSP
-          // payload telling us (most BSPs include a "to" field with the
-          // receiving number — wire that in here before Phase 7 external
-          // tenants, matching it against tenant_configs / tenants.whatsapp_number).
-          const defaultTenant = await trx('tenants')
-            .where({ status: 'active' })
-            .orderBy('created_at', 'asc')
-            .first();
+          // Resolve tenant by the receiving WhatsApp number when the BSP
+          // includes it (most do — Gupshup/Interakt/Meta Cloud API all send
+          // a "to" or equivalent field). Falls back to the shared-number
+          // path (oldest active tenant) only when receivingNumber is absent,
+          // which means it arrived on the platform's shared number where the
+          // inferredSlug-based lookup already disambiguates by property.
+          let defaultTenant = null;
+
+          if (receivingNumber) {
+            defaultTenant = await trx('tenants')
+              .where({ whatsapp_number: receivingNumber, status: 'active' })
+              .first();
+          }
+
+          if (!defaultTenant) {
+            // Shared-number fallback: safe only when one tenant uses the
+            // shared number. The inferredSlug path below further narrows it.
+            defaultTenant = await trx('tenants')
+              .where({ status: 'active' })
+              .orderBy('created_at', 'asc')
+              .first();
+          }
+
           if (!defaultTenant) throw new Error('No active tenant found to attribute this message to.');
 
           if (inferredSlug) {

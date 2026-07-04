@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getPublicListing, logVisit, capturePublicLead } = require('../controllers/publicListingController');
+const { submitAccessRequest } = require('../controllers/adminController');
 
 router.get('/ping', (req, res) => res.json({ message: 'Public API is live' }));
 
@@ -25,5 +26,12 @@ router.post('/listings/:slug/visit', logVisit);
  * @access  Public
  */
 router.post('/listings/:slug/lead', capturePublicLead);
+
+/**
+ * @route   POST /api/v1/public/request-access
+ * @desc    Prospective tenants submit an onboarding request for admin review
+ * @access  Public
+ */
+router.post('/request-access', submitAccessRequest);
 
 module.exports = router;
