@@ -6,6 +6,8 @@ const { createListing, getListings } = require('../controllers/listingController
 const { getDashboardAnalytics } = require('../controllers/analyticsController');
 const { updateListingBoundary } = require('../controllers/listingBoundaryController');
 const { inviteTenantUser } = require('../controllers/userInviteController');
+// NEW — Phase 7 billing
+const { createOrder, verifyPayment, getBillingStatus } = require('../controllers/billingController');
 
 // tenantTransaction must come after authGuard (needs req.user.tenant_id) and
 // wraps the controller in a single DB transaction with SET LOCAL tenant context
@@ -45,5 +47,26 @@ router.get('/analytics', authGuard, tenantTransaction, getDashboardAnalytics);
  * @access  Protected (owner role)
  */
 router.post('/users/invite', authGuard, tenantTransaction, inviteTenantUser);
+
+/**
+ * @route   POST /api/v1/dashboard/billing/create-order
+ * @desc    Create a Razorpay order for a plan renewal/upgrade — owner only
+ * @access  Protected
+ */
+router.post('/billing/create-order', authGuard, createOrder);
+
+/**
+ * @route   POST /api/v1/dashboard/billing/verify
+ * @desc    Verify a completed Razorpay checkout and activate the plan
+ * @access  Protected
+ */
+router.post('/billing/verify', authGuard, verifyPayment);
+
+/**
+ * @route   GET /api/v1/dashboard/billing/status
+ * @desc    Current plan, subscription status, and recent payment history
+ * @access  Protected
+ */
+router.get('/billing/status', authGuard, getBillingStatus);
 
 module.exports = router;

@@ -9,6 +9,12 @@ const {
   createTenant,
   listTenants,
 } = require('../controllers/adminController');
+// NEW — Phase 6 monetization (super-admin ad management)
+const {
+  listAdPlacements,
+  createAdPlacement,
+  updateAdPlacement,
+} = require('../controllers/adminAdsController');
 
 // Every admin route requires a valid JWT (authGuard) AND super_admin role (adminGuard)
 router.use(authGuard, adminGuard);
@@ -42,5 +48,23 @@ router.get('/tenants', listTenants);
  * @desc    Directly create a new tenant without a request
  */
 router.post('/tenants', createTenant);
+
+/**
+ * @route   GET /api/v1/admin/ads
+ * @desc    List all ad placements with lifetime impression/click counts
+ */
+router.get('/ads', listAdPlacements);
+
+/**
+ * @route   POST /api/v1/admin/ads
+ * @desc    Create a new ad placement
+ */
+router.post('/ads', createAdPlacement);
+
+/**
+ * @route   PATCH /api/v1/admin/ads/:id
+ * @desc    Update an ad placement (toggle is_active, fix a URL, extend dates, etc.)
+ */
+router.patch('/ads/:id', updateAdPlacement);
 
 module.exports = router;

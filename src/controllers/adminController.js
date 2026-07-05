@@ -1,5 +1,7 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+// NEW — Phase 7
+const { sendOnboardingEmail } = require('../services/emailService');
 
 function generateTempPassword() {
   return `Welcome${crypto.randomBytes(4).toString('hex')}!`;
@@ -76,7 +78,9 @@ async function listRequests(req, res) {
  * POST /api/v1/admin/requests/:id/approve
  * Approves a pending request: creates tenant + owner user + tenant_config
  * in one transaction, then marks the request approved.
- * Returns the temporary password in the response — no email service yet.
+ * Returns the temporary password in the response — the same credentials
+ * are also emailed to the new owner (NEW — Phase 7), so the response value
+ * is now a fallback for display, not the only delivery channel.
  */
 async function approveRequest(req, res) {
   const knex = req.app.get('db');
@@ -136,6 +140,16 @@ async function approveRequest(req, res) {
       });
     });
 
+    // NEW — Phase 7: email the credentials. Best-effort; never blocks the
+    // response, and the temp password is still returned below regardless.
+    sendOnboardingEmail({
+      to: newUser.email,
+      businessName: newTenant.business_name,
+      contactName: request.contact_name,
+      email: newUser.email,
+      tempPassword,
+    }).catch((err) => console.error('Onboarding email failed (non-fatal):', err.message));
+
     return res.status(201).json({
       success: true,
       message: 'Request approved. Tenant account created.',
@@ -189,6 +203,7 @@ async function rejectRequest(req, res) {
 /**
  * POST /api/v1/admin/tenants
  * Directly creates a new tenant without going through the request flow.
+ * Also emails the credentials (NEW — Phase 7), same as approveRequest.
  */
 async function createTenant(req, res) {
   const knex = req.app.get('db');
@@ -236,6 +251,15 @@ async function createTenant(req, res) {
       });
     });
 
+    // NEW — Phase 7: email the credentials, best-effort.
+    sendOnboardingEmail({
+      to: newUser.email,
+      businessName: newTenant.business_name,
+      contactName: contact_name.trim(),
+      email: newUser.email,
+      tempPassword,
+    }).catch((err) => console.error('Onboarding email failed (non-fatal):', err.message));
+
     return res.status(201).json({
       success: true,
       message: 'Tenant account created.',
@@ -264,6 +288,8 @@ async function listTenants(req, res) {
         'tenants.business_name',
         'tenants.plan',
         'tenants.status',
+        'tenants.subscription_status',
+        'tenants.current_period_end',
         'tenants.created_at',
         knex.raw('count(users.id)::int as user_count')
       )
