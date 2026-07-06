@@ -25,7 +25,7 @@ module.exports = async function tenantTransaction(req, res, next) {
   let trx;
   try {
     trx = await knex.transaction();
-    await trx.raw('SET LOCAL app.current_tenant_id = ?', [tenantId]);
+    await trx.raw('SELECT set_config(?, ?, true)', ['app.current_tenant_id', String(tenantId)]);
     req.dbTrx = trx;
   } catch (err) {
     return next(err);
