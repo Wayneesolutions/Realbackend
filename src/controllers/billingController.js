@@ -1,8 +1,8 @@
+const { v4: uuidv4 } = require('uuid');
 const {
   listPlans,
-  createOrderForPlan,
-  verifyPaymentSignature,
-  verifyWebhookSignature,
+  createCheckoutSession,
+  constructStripeEvent,
   PLAN_PRICES_INR,
 } = require('../services/billingService');
 const { sendPaymentReceiptEmail } = require('../services/emailService');
@@ -11,22 +11,20 @@ const BILLING_PERIOD_DAYS = 30;
 
 /**
  * GET /api/v1/public/billing/plans
- * Public — powers both the landing page pricing table and the dashboard
- * billing modal, so pricing only needs to change in one place
- * (billingService.js).
+ * Public — powers both the landing page pricing table and the billing modal.
  */
 async function getPlans(req, res) {
   return res.json({ success: true, plans: listPlans() });
 }
 
 /**
- * POST /api/v1/dashboard/billing/create-order
- * Owner-only. Creates a Razorpay order for the tenant's chosen plan.
- * The frontend takes the returned order to Razorpay's checkout widget.
+ * POST /api/v1/dashboard/billing/create-checkout-session
+ * Owner-only. Creates a Stripe Checkout Session and returns the hosted URL.
+ * Frontend redirects the user to that URL to complete payment on Stripe.
  */
-async function createOrder(req, res) {
+async function createCheckoutSessionHandler(req, res) {
   const knex = req.app.get('db');
-  const { plan } = req.body;
+  const { plan, successUrl, cancelUrl } = req.body;
 
   if (req.user.role !== 'owner') {
     return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only the account owner can manage billing.' } });
@@ -34,85 +32,48 @@ async function createOrder(req, res) {
 
   if (!PLAN_PRICES_INR[plan]) {
     return res.status(400).json({
-      error: { code: 'VALIDATION_ERROR', message: `plan must be one of: ${Object.keys(PLAN_PRICES_INR).join(', ')}.` }
+      error: { code: 'VALIDATION_ERROR', message: `plan must be one of: ${Object.keys(PLAN_PRICES_INR).join(', ')}.` },
+    });
+  }
+
+  if (!successUrl || !cancelUrl) {
+    return res.status(400).json({
+      error: { code: 'VALIDATION_ERROR', message: 'successUrl and cancelUrl are required.' },
     });
   }
 
   try {
-    const receiptId = `tenant_${req.user.tenant_id}_${Date.now()}`;
-    const { order, amountPaise } = await createOrderForPlan(plan, receiptId);
+    const paymentEventId = uuidv4();
+
+    const owner = await knex('users').where({ tenant_id: req.user.tenant_id, role: 'owner' }).first();
+
+    const { sessionId, url, amountPaise } = await createCheckoutSession({
+      plan,
+      paymentEventId,
+      userEmail: owner?.email || req.user.email,
+      successUrl,
+      cancelUrl,
+    });
 
     await knex('payment_events').insert({
+      id: paymentEventId,
       tenant_id: req.user.tenant_id,
-      razorpay_order_id: order.id,
+      stripe_session_id: sessionId,
       plan,
       amount_paise: amountPaise,
       status: 'created',
     });
 
-    return res.status(201).json({
-      success: true,
-      order: {
-        id: order.id,
-        amount: amountPaise,
-        currency: order.currency,
-      },
-      razorpayKeyId: process.env.RAZORPAY_KEY_ID,
-    });
+    return res.status(201).json({ success: true, url });
   } catch (error) {
-    console.error('Failed to create billing order:', error.message);
-    return res.status(500).json({ error: { code: 'ORDER_CREATE_FAILED', message: 'Failed to start payment. Please try again.' } });
-  }
-}
-
-/**
- * POST /api/v1/dashboard/billing/verify
- * Owner-only. Frontend calls this immediately after Razorpay's checkout
- * widget reports success. The webhook (below) is the authoritative
- * fallback in case this call never completes (browser closed, network
- * drop, etc.) — both paths converge on the same idempotent update.
- */
-async function verifyPayment(req, res) {
-  const knex = req.app.get('db');
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
-
-  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-    return res.status(400).json({
-      error: { code: 'VALIDATION_ERROR', message: 'razorpay_order_id, razorpay_payment_id, and razorpay_signature are required.' }
-    });
-  }
-
-  try {
-    const isValid = verifyPaymentSignature({
-      razorpayOrderId: razorpay_order_id,
-      razorpayPaymentId: razorpay_payment_id,
-      razorpaySignature: razorpay_signature,
-    });
-
-    if (!isValid) {
-      return res.status(400).json({ error: { code: 'INVALID_SIGNATURE', message: 'Payment could not be verified.' } });
-    }
-
-    const paymentEvent = await knex('payment_events')
-      .where({ razorpay_order_id, tenant_id: req.user.tenant_id })
-      .first();
-
-    if (!paymentEvent) {
-      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No matching order found for this account.' } });
-    }
-
-    const result = await markPaymentPaid(knex, paymentEvent, razorpay_payment_id);
-    return res.json({ success: true, subscription: result });
-  } catch (error) {
-    console.error('Failed to verify payment:', error.message);
-    return res.status(500).json({ error: { code: 'VERIFY_FAILED', message: 'Failed to verify payment.' } });
+    console.error('Failed to create Stripe checkout session:', error.message);
+    return res.status(500).json({ error: { code: 'CHECKOUT_CREATE_FAILED', message: 'Failed to start payment. Please try again.' } });
   }
 }
 
 /**
  * GET /api/v1/dashboard/billing/status
- * Any authenticated dashboard user (owner or agent) can view — only owner
- * can act on it (enforced in createOrder/verifyPayment above).
+ * Any authenticated dashboard user can view billing status.
  */
 async function getBillingStatus(req, res) {
   const knex = req.app.get('db');
@@ -137,48 +98,53 @@ async function getBillingStatus(req, res) {
 }
 
 /**
- * POST /api/v1/webhooks/razorpay
- * Public — signature-verified via RAZORPAY_WEBHOOK_SECRET (separate from
- * the checkout signature). Authoritative source of truth for payment
- * confirmation; idempotent against the /verify call above (whichever
- * arrives first wins, the second is a no-op).
+ * POST /api/v1/webhooks/stripe
+ * Public — signature-verified via STRIPE_WEBHOOK_SECRET.
+ * Authoritative payment confirmation. Handles checkout.session.completed.
  */
-async function handleRazorpayWebhook(req, res) {
+async function handleStripeWebhook(req, res) {
   const knex = req.app.get('db');
-  const signature = req.headers['x-razorpay-signature'];
+  const sig = req.headers['stripe-signature'];
 
-  if (!verifyWebhookSignature(req.rawBody, signature)) {
-    return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid webhook signature.' } });
+  let event;
+  try {
+    event = constructStripeEvent(req.rawBody, sig);
+  } catch (err) {
+    console.error('Stripe webhook signature verification failed:', err.message);
+    return res.status(400).json({ error: 'Invalid webhook signature.' });
   }
 
-  const event = req.body;
+  // If STRIPE_WEBHOOK_SECRET not set, parse body directly (dev mode only)
+  if (!event) {
+    event = req.body;
+  }
 
   try {
-    if (event.event === 'payment.captured') {
-      const payment = event.payload?.payment?.entity;
-      if (payment?.order_id) {
-        const paymentEvent = await knex('payment_events').where({ razorpay_order_id: payment.order_id }).first();
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const paymentEventId = session.metadata?.payment_event_id;
+
+      if (paymentEventId) {
+        const paymentEvent = await knex('payment_events').where({ id: paymentEventId }).first();
         if (paymentEvent && paymentEvent.status !== 'paid') {
-          await markPaymentPaid(knex, paymentEvent, payment.id, event);
+          await markPaymentPaid(knex, paymentEvent, session.payment_intent, event);
         }
       }
     }
 
-    // Always 200 — Razorpay retries on non-2xx, and we've either handled
-    // the event or intentionally ignored an event type we don't act on.
-    return res.status(200).json({ success: true });
+    // Always 200 — Stripe retries on non-2xx.
+    return res.status(200).json({ received: true });
   } catch (error) {
-    console.error('Failed to process Razorpay webhook:', error.message);
-    return res.status(200).json({ success: true, trackingError: error.message });
+    console.error('Failed to process Stripe webhook:', error.message);
+    return res.status(200).json({ received: true, trackingError: error.message });
   }
 }
 
 /**
- * Shared by both the /verify endpoint and the webhook — marks a payment
- * event paid, extends the tenant's subscription, and sends the receipt
- * email. Idempotent: if already paid, does nothing further.
+ * Marks a payment event as paid, extends the tenant's subscription, and
+ * sends the receipt email. Idempotent — safe to call twice.
  */
-async function markPaymentPaid(knex, paymentEvent, razorpayPaymentId, rawWebhookPayload = null) {
+async function markPaymentPaid(knex, paymentEvent, stripePaymentIntentId, rawWebhookPayload = null) {
   if (paymentEvent.status === 'paid') {
     const tenant = await knex('tenants').where({ id: paymentEvent.tenant_id }).first();
     return { plan: tenant.plan, subscription_status: tenant.subscription_status, current_period_end: tenant.current_period_end };
@@ -192,7 +158,7 @@ async function markPaymentPaid(knex, paymentEvent, razorpayPaymentId, rawWebhook
       .where({ id: paymentEvent.id })
       .update({
         status: 'paid',
-        razorpay_payment_id: razorpayPaymentId,
+        stripe_payment_intent_id: stripePaymentIntentId || null,
         raw_webhook_payload: rawWebhookPayload ? JSON.stringify(rawWebhookPayload) : null,
         updated_at: trx.fn.now(),
       });
@@ -209,7 +175,6 @@ async function markPaymentPaid(knex, paymentEvent, razorpayPaymentId, rawWebhook
 
     const owner = await trx('users').where({ tenant_id: tenant.id, role: 'owner' }).first();
     if (owner) {
-      // Best-effort — never let an email failure roll back a paid transaction.
       sendPaymentReceiptEmail({
         to: owner.email,
         businessName: tenant.business_name,
@@ -223,4 +188,4 @@ async function markPaymentPaid(knex, paymentEvent, razorpayPaymentId, rawWebhook
   return { plan: tenant.plan, subscription_status: tenant.subscription_status, current_period_end: tenant.current_period_end };
 }
 
-module.exports = { getPlans, createOrder, verifyPayment, getBillingStatus, handleRazorpayWebhook };
+module.exports = { getPlans, createCheckoutSessionHandler, getBillingStatus, handleStripeWebhook };
