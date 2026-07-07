@@ -15,7 +15,6 @@ const {
   createAdPlacement,
   updateAdPlacement,
 } = require('../controllers/adminAdsController');
-const { getPresignedUrl } = require('../controllers/uploadController');
 
 // Every admin route requires a valid JWT (authGuard) AND super_admin role (adminGuard)
 router.use(authGuard, adminGuard);
@@ -67,11 +66,5 @@ router.post('/ads', createAdPlacement);
  * @desc    Update an ad placement (toggle is_active, fix a URL, extend dates, etc.)
  */
 router.patch('/ads/:id', updateAdPlacement);
-
-/**
- * @route   POST /api/v1/admin/upload/presign
- * @desc    Generate a presigned S3 URL for direct browser-to-S3 image upload
- */
-router.post('/upload/presign', getPresignedUrl);
 
 module.exports = router;

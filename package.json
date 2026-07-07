@@ -17,8 +17,6 @@
     "workers": "concurrently \"npm:worker:geo\" \"npm:worker:landmark\" \"npm:worker:vocallm\" \"npm:worker:whatsapp\""
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1079.0",
-    "@aws-sdk/s3-request-presigner": "^3.1079.0",
     "axios": "^1.7.2",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.7.0",
