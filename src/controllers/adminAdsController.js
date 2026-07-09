@@ -12,7 +12,7 @@ const VALID_REVENUE_MODELS = ['cpl', 'flat_fee'];
  * Lists every ad placement (active and inactive) with lifetime event counts.
  */
 async function listAdPlacements(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
 
   try {
     const placements = await knex('ad_placements')
@@ -37,7 +37,7 @@ async function listAdPlacements(req, res) {
  * Creates a new ad placement.
  */
 async function createAdPlacement(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
   const {
     advertiser_name,
     position,
@@ -104,7 +104,7 @@ async function createAdPlacement(req, res) {
  * editable field (e.g. extending active_to, fixing a typo'd click_url).
  */
 async function updateAdPlacement(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
   const { id } = req.params;
   const allowedFields = [
     'advertiser_name', 'position', 'image_url', 'click_url',

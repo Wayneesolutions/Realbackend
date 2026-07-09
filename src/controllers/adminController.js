@@ -12,7 +12,7 @@ function generateTempPassword() {
  * Public — no auth. Saves a pending onboarding request from a prospective tenant.
  */
 async function submitAccessRequest(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
   const { business_name, contact_name, email, phone, message } = req.body;
 
   if (!business_name || !contact_name || !email || !phone) {
@@ -57,7 +57,7 @@ async function submitAccessRequest(req, res) {
  * Lists all access requests, optionally filtered by status.
  */
 async function listRequests(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
   const { status } = req.query;
 
   try {
@@ -83,7 +83,7 @@ async function listRequests(req, res) {
  * is now a fallback for display, not the only delivery channel.
  */
 async function approveRequest(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
   const { id } = req.params;
   const adminUserId = req.user.id;
 
@@ -169,7 +169,7 @@ async function approveRequest(req, res) {
  * POST /api/v1/admin/requests/:id/reject
  */
 async function rejectRequest(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
   const { id } = req.params;
   const adminUserId = req.user.id;
 
@@ -206,7 +206,7 @@ async function rejectRequest(req, res) {
  * Also emails the credentials (NEW — Phase 7), same as approveRequest.
  */
 async function createTenant(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
   const { business_name, contact_name, email, phone } = req.body;
 
   if (!business_name || !contact_name || !email || !phone) {
@@ -280,7 +280,7 @@ async function createTenant(req, res) {
  * Lists all tenants with their user counts.
  */
 async function listTenants(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
   try {
     const tenants = await knex('tenants')
       .select(

@@ -118,6 +118,34 @@ async function sendPaymentReceiptEmail({ to, businessName, plan, amountINR, curr
   return send({ to, subject: `Payment received — ${plan} plan renewed`, html });
 }
 
+/**
+ * Sent when a user requests a password reset. Link contains a single-use,
+ * time-limited token — see authController.js forgotPassword/resetPassword.
+ */
+async function sendPasswordResetEmail({ to, resetUrl }) {
+  const html = `
+    <div style="font-family: -apple-system, Arial, sans-serif; max-width: 480px; margin: 0 auto;">
+      <div style="background: #0c1b2e; padding: 24px; border-radius: 12px 12px 0 0;">
+        <span style="color: #c8a96e; font-weight: 800; letter-spacing: 1px; font-size: 13px; text-transform: uppercase;">PropertyPro</span>
+      </div>
+      <div style="border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px; padding: 28px 24px;">
+        <h2 style="color: #0c1b2e; margin: 0 0 8px;">Reset your password</h2>
+        <p style="color: #475569; line-height: 1.6;">
+          We received a request to reset your PropertyPro password. This link expires in 30 minutes.
+        </p>
+        <a href="${resetUrl}" style="display: inline-block; background: linear-gradient(135deg, #0c1b2e, #1a3558); color: #fff; text-decoration: none; padding: 12px 26px; border-radius: 9px; font-weight: 700; font-size: 14px; margin: 12px 0;">
+          Reset Password
+        </a>
+        <p style="color: #94a3b8; font-size: 12px; margin-top: 20px;">
+          If you didn't request this, you can safely ignore this email — your password won't be changed.
+        </p>
+      </div>
+    </div>
+  `;
+
+  return send({ to, subject: 'Reset your PropertyPro password', html });
+}
+
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -126,4 +154,4 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-module.exports = { sendOnboardingEmail, sendPaymentReceiptEmail };
+module.exports = { sendOnboardingEmail, sendPaymentReceiptEmail, sendPasswordResetEmail };

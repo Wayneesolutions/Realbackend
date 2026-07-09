@@ -108,7 +108,21 @@ exports.seed = async function (knex) {
     try {
       const { Queue } = require('bullmq');
       return new Queue('geo-enrichment', {
-        connection: { host: process.env.REDIS_HOST || '127.0.0.1', port: 6379 },
+        connection: {
+          host: process.env.REDIS_HOST || '127.0.0.1',
+          port: 6379,
+          // BUG FIX: ioredis retries connecting indefinitely by default,
+          // which made this whole seed script hang forever if Redis wasn't
+          // reachable yet (a real risk during a fresh deploy's first setup
+          // run) instead of the try/catch below ever getting a chance to
+          // catch anything. Capping retries makes a genuinely-unreachable
+          // Redis fail within a couple seconds instead of hanging the
+          // deploy step indefinitely.
+          maxRetriesPerRequest: 1,
+          retryStrategy: () => null, // don't keep retrying — fail fast
+          connectTimeout: 3000,
+          lazyConnect: true,
+        },
       });
     } catch (err) {
       return null;

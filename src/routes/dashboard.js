@@ -6,7 +6,7 @@ const { createListing, getListings } = require('../controllers/listingController
 const { getDashboardAnalytics } = require('../controllers/analyticsController');
 const { updateListingBoundary } = require('../controllers/listingBoundaryController');
 const { inviteTenantUser } = require('../controllers/userInviteController');
-const { createCheckoutSessionHandler, getBillingStatus } = require('../controllers/billingController');
+const { createCheckoutSessionHandler, cancelSubscriptionHandler, getBillingStatus } = require('../controllers/billingController');
 
 // tenantTransaction must come after authGuard (needs req.user.tenant_id) and
 // wraps the controller in a single DB transaction with SET LOCAL tenant context
@@ -47,7 +47,19 @@ router.get('/analytics', authGuard, tenantTransaction, getDashboardAnalytics);
  */
 router.post('/users/invite', authGuard, tenantTransaction, inviteTenantUser);
 
-router.post('/billing/create-checkout-session', authGuard, createCheckoutSessionHandler);
-router.get('/billing/status', authGuard, getBillingStatus);
+/**
+ * BUG FIX: these two billing routes previously had authGuard but NOT
+ * tenantTransaction — they queried via the raw connection pool with no
+ * tenant context set at all. Under the old permissive RLS (allow
+ * everything when no context is set) this happened to still be safe only
+ * because of the app-layer .where({tenant_id}) clauses already in the
+ * controller. Under the new default-deny RLS, missing tenantTransaction
+ * here would make these routes return zero rows instead of the tenant's
+ * actual billing data. Added for correctness and consistency with every
+ * other tenant-scoped route.
+ */
+router.post('/billing/create-checkout-session', authGuard, tenantTransaction, createCheckoutSessionHandler);
+router.post('/billing/cancel-subscription', authGuard, tenantTransaction, cancelSubscriptionHandler);
+router.get('/billing/status', authGuard, tenantTransaction, getBillingStatus);
 
 module.exports = router;

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authGuard = require('../middleware/auth');
 const adminGuard = require('../middleware/adminGuard');
+const serviceContext = require('../middleware/serviceContext');
 const {
   listRequests,
   approveRequest,
@@ -9,15 +10,21 @@ const {
   createTenant,
   listTenants,
 } = require('../controllers/adminController');
-// NEW — Phase 6 monetization (super-admin ad management)
 const {
   listAdPlacements,
   createAdPlacement,
   updateAdPlacement,
 } = require('../controllers/adminAdsController');
+// NEW — plan management (gap #3)
+const { listPlansAdmin, updatePlan, createPlan } = require('../controllers/plansController');
 
-// Every admin route requires a valid JWT (authGuard) AND super_admin role (adminGuard)
-router.use(authGuard, adminGuard);
+// Every admin route requires a valid JWT (authGuard), super_admin role
+// (adminGuard), AND now serviceContext — these routes legitimately read/
+// write across every tenant, which the default-deny RLS would otherwise
+// block. adminGuard's role check is the real access control here, not
+// tenant matching, so this is the intentional cross-tenant opt-in (same
+// pattern as the webhook routes).
+router.use(authGuard, adminGuard, serviceContext);
 
 /**
  * @route   GET /api/v1/admin/requests
@@ -66,5 +73,23 @@ router.post('/ads', createAdPlacement);
  * @desc    Update an ad placement (toggle is_active, fix a URL, extend dates, etc.)
  */
 router.patch('/ads/:id', updateAdPlacement);
+
+/**
+ * @route   GET /api/v1/admin/plans
+ * @desc    List every plan (including inactive) for admin editing
+ */
+router.get('/plans', listPlansAdmin);
+
+/**
+ * @route   POST /api/v1/admin/plans
+ * @desc    Create a new plan tier
+ */
+router.post('/plans', createPlan);
+
+/**
+ * @route   PATCH /api/v1/admin/plans/:key
+ * @desc    Update a plan's price, listing limit, features, or active status
+ */
+router.patch('/plans/:key', updatePlan);
 
 module.exports = router;

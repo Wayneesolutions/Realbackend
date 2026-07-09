@@ -1,7 +1,16 @@
 const crypto = require('crypto');
 const { Queue } = require('bullmq');
 
-const redisConnection = { host: process.env.REDIS_HOST || '127.0.0.1', port: process.env.REDIS_PORT || 6379 };
+// Same fail-fast rationale as listingController.js's geoEnrichmentQueue —
+// this is a producer (called from an inbound webhook request), not the
+// worker, so it shouldn't hang indefinitely on a Redis blip.
+const redisConnection = {
+  host: process.env.REDIS_HOST || '127.0.0.1',
+  port: process.env.REDIS_PORT || 6379,
+  maxRetriesPerRequest: 1,
+  retryStrategy: () => null,
+  connectTimeout: 3000,
+};
 const vocallmChatQueue = new Queue('vocallm-chat-processor', { connection: redisConnection });
 
 /**
@@ -16,11 +25,17 @@ function parseInboundPayload(body) {
     incomingText: body.messages?.[0]?.text?.body || body.message_text || body.text,
     bspThreadRef: body.messages?.[0]?.id || body.conversation_id || body.msg_id,
     inferredSlug: body.messages?.[0]?.context?.referred_slug || body.metadata?.slug || null,
-    // The receiving WhatsApp business number — most BSPs include this so we
-    // can route messages to the correct tenant without relying on "oldest active".
-    receivingNumber: body.metadata?.phone_number_id
-      ? null // Meta Cloud API uses phone_number_id, not a raw number — resolve below if needed
-      : body.to || body.to_phone || body.receiver?.phone || null,
+    // BUG FIX: this previously always resolved to null whenever
+    // phone_number_id was present, with a comment promising it would be
+    // "resolved below" — that resolution code never existed. Meta Cloud API
+    // identifies the receiving number by phone_number_id (an opaque ID, not
+    // the raw phone number), so every Meta inbound message fell through to
+    // the "oldest active tenant" fallback regardless of which tenant's
+    // number it actually arrived on. Now surfaces both fields; the caller
+    // resolves whichever one is present against tenants.whatsapp_number or
+    // tenants.phone_number_id.
+    receivingNumber: body.to || body.to_phone || body.receiver?.phone || null,
+    receivingPhoneNumberId: body.metadata?.phone_number_id || null,
   };
 }
 
@@ -52,14 +67,14 @@ function isValidSignature(req, secret) {
  * BullMQ. Does not wait on the AI reply.
  */
 async function handleInboundWhatsApp(req, res) {
-  const knex = req.app.get('db');
+  const knex = req.dbTrx || req.app.get('db');
   const secret = process.env.WHATSAPP_WEBHOOK_SECRET;
 
   if (!isValidSignature(req, secret)) {
     return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid webhook signature.' } });
   }
 
-  const { phone, leadName, incomingText, bspThreadRef, inferredSlug, receivingNumber } = parseInboundPayload(req.body);
+  const { phone, leadName, incomingText, bspThreadRef, inferredSlug, receivingNumber, receivingPhoneNumberId } = parseInboundPayload(req.body);
 
   if (!phone || !incomingText) {
     // Non-message events (delivery receipts, status updates) — ack and move on
@@ -84,15 +99,22 @@ async function handleInboundWhatsApp(req, res) {
         lead = await trx('leads').where({ phone }).first();
 
         if (!lead) {
-          // Resolve tenant by the receiving WhatsApp number when the BSP
-          // includes it (most do — Gupshup/Interakt/Meta Cloud API all send
-          // a "to" or equivalent field). Falls back to the shared-number
-          // path (oldest active tenant) only when receivingNumber is absent,
-          // which means it arrived on the platform's shared number where the
-          // inferredSlug-based lookup already disambiguates by property.
+          // Resolve tenant by whichever identifier this BSP sent — Meta
+          // Cloud API sends phone_number_id (opaque, stable per WhatsApp
+          // Business number); other BSPs (Gupshup/Interakt) send a raw "to"
+          // number. Falls back to the shared-number path (oldest active
+          // tenant) only when NEITHER is present, which means it arrived on
+          // the platform's shared number where the inferredSlug-based
+          // lookup below further narrows it down.
           let defaultTenant = null;
 
-          if (receivingNumber) {
+          if (receivingPhoneNumberId) {
+            defaultTenant = await trx('tenants')
+              .where({ phone_number_id: receivingPhoneNumberId, status: 'active' })
+              .first();
+          }
+
+          if (!defaultTenant && receivingNumber) {
             defaultTenant = await trx('tenants')
               .where({ whatsapp_number: receivingNumber, status: 'active' })
               .first();
