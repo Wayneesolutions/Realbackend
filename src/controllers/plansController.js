@@ -103,4 +103,37 @@ async function createPlan(req, res) {
   }
 }
 
-module.exports = { listPlansAdmin, updatePlan, createPlan };
+/**
+ * DELETE /api/v1/admin/plans/:key
+ * Hard-deletes a plan only if no tenants are currently subscribed to it.
+ * If tenants exist on this plan, returns 409 — deactivate instead.
+ */
+async function deletePlan(req, res) {
+  const knex = req.dbTrx || req.app.get('db');
+  const { key } = req.params;
+
+  try {
+    const existing = await knex('plans').where({ key }).first();
+    if (!existing) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Plan not found.' } });
+    }
+
+    const { count } = await knex('tenants').where({ plan: key }).count('id as count').first();
+    if (parseInt(count, 10) > 0) {
+      return res.status(409).json({
+        error: {
+          code: 'PLAN_IN_USE',
+          message: `Cannot delete — ${count} tenant(s) are on this plan. Deactivate it instead to hide it from new signups.`,
+        },
+      });
+    }
+
+    await knex('plans').where({ key }).delete();
+    return res.json({ success: true, message: `Plan "${key}" has been deleted.` });
+  } catch (error) {
+    console.error('Failed to delete plan:', error.message);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to delete plan.' } });
+  }
+}
+
+module.exports = { listPlansAdmin, updatePlan, createPlan, deletePlan };

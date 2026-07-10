@@ -16,7 +16,7 @@ const {
   updateAdPlacement,
 } = require('../controllers/adminAdsController');
 // NEW — plan management (gap #3)
-const { listPlansAdmin, updatePlan, createPlan } = require('../controllers/plansController');
+const { listPlansAdmin, updatePlan, createPlan, deletePlan } = require('../controllers/plansController');
 
 // Every admin route requires a valid JWT (authGuard), super_admin role
 // (adminGuard), AND now serviceContext — these routes legitimately read/
@@ -91,5 +91,11 @@ router.post('/plans', createPlan);
  * @desc    Update a plan's price, listing limit, features, or active status
  */
 router.patch('/plans/:key', updatePlan);
+
+/**
+ * @route   DELETE /api/v1/admin/plans/:key
+ * @desc    Delete a plan — blocked if any tenants are currently on it
+ */
+router.delete('/plans/:key', deletePlan);
 
 module.exports = router;

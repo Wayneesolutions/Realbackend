@@ -1,11 +1,7 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { sendOnboardingEmail } = require('../services/emailService');
 
-/**
- * Invites a second user under the same tenant. Owner-only. Returns the
- * temp password in the response for now — no email service wired up yet,
- * so you'll copy-paste it to them over WhatsApp for the first few users.
- */
 async function inviteTenantUser(req, res) {
   const knex = req.dbTrx || req.app.get('db');
   const { tenant_id, role } = req.user;
@@ -42,9 +38,18 @@ async function inviteTenantUser(req, res) {
       password_hash: hashedPassword
     }).returning(['id', 'email', 'role']);
 
+    const tenant = await knex('tenants').where({ id: tenant_id }).select('business_name').first();
+    sendOnboardingEmail({
+      to: email.trim().toLowerCase(),
+      businessName: tenant?.business_name || '',
+      contactName: name.trim(),
+      email: email.trim().toLowerCase(),
+      tempPassword,
+    }).catch(() => {});
+
     return res.status(201).json({
       success: true,
-      message: 'User created. Share the temporary password with them directly — it will not be shown again.',
+      message: 'User created. An email with login credentials has been sent to them.',
       user: newUser,
       temporaryPassword: tempPassword
     });

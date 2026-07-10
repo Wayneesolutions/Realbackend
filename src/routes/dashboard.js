@@ -7,6 +7,7 @@ const { getDashboardAnalytics } = require('../controllers/analyticsController');
 const { updateListingBoundary } = require('../controllers/listingBoundaryController');
 const { inviteTenantUser } = require('../controllers/userInviteController');
 const { createCheckoutSessionHandler, cancelSubscriptionHandler, getBillingStatus } = require('../controllers/billingController');
+const { uploadMiddleware, getListingMedia, uploadListingPhoto, deleteListingPhoto } = require('../controllers/mediaController');
 
 // tenantTransaction must come after authGuard (needs req.user.tenant_id) and
 // wraps the controller in a single DB transaction with SET LOCAL tenant context
@@ -46,6 +47,18 @@ router.get('/analytics', authGuard, tenantTransaction, getDashboardAnalytics);
  * @access  Protected (owner role)
  */
 router.post('/users/invite', authGuard, tenantTransaction, inviteTenantUser);
+
+/**
+ * @route   GET  /api/v1/dashboard/listings/:id/media
+ * @desc    Get photo_urls for a listing
+ * @route   POST /api/v1/dashboard/listings/:id/media
+ * @desc    Upload a photo to S3 and append the URL to the listing's photo_urls
+ * @route   DELETE /api/v1/dashboard/listings/:id/media
+ * @desc    Remove a photo from S3 and from the listing's photo_urls
+ */
+router.get('/listings/:id/media', authGuard, tenantTransaction, getListingMedia);
+router.post('/listings/:id/media', authGuard, uploadMiddleware, tenantTransaction, uploadListingPhoto);
+router.delete('/listings/:id/media', authGuard, tenantTransaction, deleteListingPhoto);
 
 /**
  * BUG FIX: these two billing routes previously had authGuard but NOT
