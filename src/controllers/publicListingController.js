@@ -52,7 +52,7 @@ async function getPublicListing(req, res) {
 
     // 2. Fetch the associated visual media mapping data blocks
     const media = await knex('listing_media')
-      .select('satellite_image_url', 'streetview_image_url')
+      .select('satellite_image_url', 'streetview_image_url', 'photo_urls')
       .where({ listing_id: listing.id })
       .first();
 

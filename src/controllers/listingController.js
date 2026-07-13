@@ -1,9 +1,22 @@
 const crypto = require('crypto');
 const { Queue } = require('bullmq');
 
-// Initialize access queue pointing at our background Redis worker instance
+// Initialize access queue pointing at our background Redis worker instance.
+// maxRetriesPerRequest/retryStrategy/connectTimeout: this is a job
+// *producer* (adding jobs from an HTTP request), not the worker that
+// consumes them — if Redis has a brief outage, a request creating a
+// listing should fail fast with a clear error, not hang indefinitely
+// waiting for ioredis's default unlimited reconnect retries. The actual
+// worker process (geoEnrichmentWorker.js) should and does keep its own
+// persistent, long-retry connection — this fix is scoped to producers only.
 const geoEnrichmentQueue = new Queue('geo-enrichment', {
-  connection: { host: process.env.REDIS_HOST || '127.0.0.1', port: 6379 }
+  connection: {
+    host: process.env.REDIS_HOST || '127.0.0.1',
+    port: 6379,
+    maxRetriesPerRequest: 1,
+    retryStrategy: () => null,
+    connectTimeout: 3000,
+  }
 });
 
 /**
@@ -11,8 +24,8 @@ const geoEnrichmentQueue = new Queue('geo-enrichment', {
  * Dispatches an asynchronous geocoding and visual aggregation job via BullMQ.
  */
 async function createListing(req, res) {
-  const knex = req.app.get('db');
-  
+  const knex = req.dbTrx || req.app.get('db');
+
   // Extract contextual identity injected previously by our authGuard middleware
   const { tenant_id, id: userId } = req.user;
   
@@ -26,6 +39,25 @@ async function createListing(req, res) {
   }
 
   try {
+    // FIX (gap #5 — listing limits not enforced): plan limits existed only
+    // as a number shown on the pricing page — nothing ever checked a
+    // tenant's actual listing count against it, so a starter-plan tenant
+    // could create unlimited listings same as an unlimited-plan one.
+    const tenant = await knex('tenants').where({ id: tenant_id }).first();
+    const plan = await knex('plans').where({ key: tenant.plan }).first();
+
+    if (plan && plan.listing_limit !== null) {
+      const [{ count }] = await knex('listings').where({ tenant_id }).count('id as count');
+      if (parseInt(count, 10) >= plan.listing_limit) {
+        return res.status(403).json({
+          error: {
+            code: 'LISTING_LIMIT_REACHED',
+            message: `Your ${plan.label} plan allows up to ${plan.listing_limit} listings. Upgrade your plan to add more.`,
+          },
+        });
+      }
+    }
+
     // 2. Generate a highly secure, unguessable URL slug (16 random bytes to prevent guessing attacks)
     const publicSlug = crypto.randomBytes(16).toString('hex');
 
@@ -84,7 +116,15 @@ async function createListing(req, res) {
  * component depends on it and would otherwise have nothing to render.
  */
 async function getListings(req, res) {
-  const knex = req.app.get('db');
+  // BUG FIX: this used req.app.get('db') (the raw pool, no tenant context)
+  // even though the route already applies tenantTransaction — meaning the
+  // SET LOCAL app.current_tenant_id that middleware sets was never actually
+  // used by this query. Harmless under the old permissive RLS (allow
+  // everything with no context) since the .where({tenant_id}) below still
+  // filtered correctly at the app layer, but under the new default-deny
+  // RLS this would have returned zero rows instead of the tenant's actual
+  // listings.
+  const knex = req.dbTrx || req.app.get('db');
   const { tenant_id } = req.user;
 
   try {
